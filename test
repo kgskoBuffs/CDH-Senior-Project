@@ -1,0 +1,856 @@
+// Arduino Uno functional test: LED, Serial, math, arrays, state machine.
+// Open Serial Monitor at 9600 baud. Send h for command help.
+// No external libraries or wiring required.
+#include <Arduino.h>
+const byte LED_PIN = LED_BUILTIN;
+unsigned long lastBlink = 0;
+unsigned long lastReport = 0;
+unsigned long blinkInterval = 500;
+bool ledOn = false;
+bool blinking = true;
+bool reporting = true;
+uint32_t iterations = 0;
+uint16_t samples[32] = {0};
+byte samplePos = 0;
+uint32_t sampleSum = 0;
+uint16_t minSample = 1023;
+uint16_t maxSample = 0;
+uint32_t rngState = 123456789UL;
+byte mode = 0;
+uint16_t checksum = 0;
+uint16_t testFailures = 0;
+uint32_t testPasses = 0;
+
+uint16_t nextRandom() {
+  rngState ^= rngState << 13;
+  rngState ^= rngState >> 17;
+  rngState ^= rngState << 5;
+  return (uint16_t)(rngState & 1023UL);
+}
+void storeSample(uint16_t v) {
+  sampleSum -= samples[samplePos];
+  samples[samplePos] = v;
+  sampleSum += v;
+  samplePos = (samplePos + 1) % 32;
+  if (v < minSample) minSample = v;
+  if (v > maxSample) maxSample = v;
+}
+uint16_t rollingAverage() { return (uint16_t)(sampleSum / 32UL); }
+void printHelp() {
+  Serial.println(F("Commands: h help, b blink, r reports,"));
+  Serial.println(F("1 slow, 2 medium, 3 fast,"));
+  Serial.println(F("t self-test, s status, c clear stats,"));
+  Serial.println(F("m change math mode, l LED toggle"));
+}
+void printStatus() {
+  Serial.print(F("Uptime ms: ")); Serial.println(millis());
+  Serial.print(F("Loop count: ")); Serial.println(iterations);
+  Serial.print(F("Blink interval: ")); Serial.println(blinkInterval);
+  Serial.print(F("LED: ")); Serial.println(ledOn ? F("ON") : F("OFF"));
+  Serial.print(F("Rolling avg: ")); Serial.println(rollingAverage());
+  Serial.print(F("Min/Max: ")); Serial.print(minSample);
+  Serial.print('/'); Serial.println(maxSample);
+  Serial.print(F("Checksum: ")); Serial.println(checksum);
+  Serial.print(F("Mode: ")); Serial.println(mode);
+  Serial.print(F("Tests passed: ")); Serial.println(testPasses);
+  Serial.print(F("Tests failed: ")); Serial.println(testFailures);
+}
+void clearStats() {
+  for (byte i = 0; i < 32; ++i) samples[i] = 0;
+  sampleSum = 0;
+  samplePos = 0;
+  minSample = 1023;
+  maxSample = 0;
+  checksum = 0;
+  iterations = 0;
+}
+void check(bool ok) {
+  if (ok) ++testPasses;
+  else ++testFailures;
+}
+void runSelfTest() {
+  Serial.println(F("Running functional self-tests..."));
+  check(rollingAverage() <= 1023);
+  check(samplePos < 32);
+  check(blinkInterval >= 50);
+  check(minSample <= 1023);
+  check(maxSample <= 1023);
+  check((uint16_t)(200U + 300U) == 500U);
+  check((uint16_t)(12U * 12U) == 144U);
+  check((uint16_t)(1024U / 4U) == 256U);
+  check((uint16_t)(0x55U ^ 0xAAU) == 0xFFU);
+  check((uint16_t)(1U << 7) == 128U);
+  Serial.print(F("Total pass: ")); Serial.println(testPasses);
+  Serial.print(F("Total fail: ")); Serial.println(testFailures);
+}
+void handleCommand(char c) {
+  switch (c) {
+    case 'h': printHelp(); break;
+    case 'b': blinking = !blinking; break;
+    case 'r': reporting = !reporting; break;
+    case '1': blinkInterval = 1000; break;
+    case '2': blinkInterval = 500; break;
+    case '3': blinkInterval = 100; break;
+    case 't': runSelfTest(); break;
+    case 's': printStatus(); break;
+    case 'c': clearStats(); break;
+    case 'm': mode = (mode + 1) % 4; break;
+    case 'l':
+      blinking = false;
+      ledOn = !ledOn;
+      digitalWrite(LED_PIN, ledOn ? HIGH : LOW);
+      break;
+    case '\n': case '\r': break;
+    default: Serial.println(F("Unknown command. Send h.")); break;
+  }
+}
+uint16_t mathStage001(uint16_t x) {
+  uint32_t a = (uint32_t)x + 1UL;
+  a ^= (a << 2);
+  a += (a >> 2);
+  a = (a * 3UL + 17UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage002(uint16_t x) {
+  uint32_t a = (uint32_t)x + 2UL;
+  a ^= (a << 3);
+  a += (a >> 3);
+  a = (a * 5UL + 34UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage003(uint16_t x) {
+  uint32_t a = (uint32_t)x + 3UL;
+  a ^= (a << 4);
+  a += (a >> 1);
+  a = (a * 7UL + 51UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage004(uint16_t x) {
+  uint32_t a = (uint32_t)x + 4UL;
+  a ^= (a << 5);
+  a += (a >> 2);
+  a = (a * 9UL + 68UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage005(uint16_t x) {
+  uint32_t a = (uint32_t)x + 5UL;
+  a ^= (a << 1);
+  a += (a >> 3);
+  a = (a * 11UL + 85UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage006(uint16_t x) {
+  uint32_t a = (uint32_t)x + 6UL;
+  a ^= (a << 2);
+  a += (a >> 1);
+  a = (a * 13UL + 102UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage007(uint16_t x) {
+  uint32_t a = (uint32_t)x + 7UL;
+  a ^= (a << 3);
+  a += (a >> 2);
+  a = (a * 1UL + 119UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage008(uint16_t x) {
+  uint32_t a = (uint32_t)x + 8UL;
+  a ^= (a << 4);
+  a += (a >> 3);
+  a = (a * 3UL + 136UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage009(uint16_t x) {
+  uint32_t a = (uint32_t)x + 9UL;
+  a ^= (a << 5);
+  a += (a >> 1);
+  a = (a * 5UL + 153UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage010(uint16_t x) {
+  uint32_t a = (uint32_t)x + 10UL;
+  a ^= (a << 1);
+  a += (a >> 2);
+  a = (a * 7UL + 170UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage011(uint16_t x) {
+  uint32_t a = (uint32_t)x + 11UL;
+  a ^= (a << 2);
+  a += (a >> 3);
+  a = (a * 9UL + 187UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage012(uint16_t x) {
+  uint32_t a = (uint32_t)x + 12UL;
+  a ^= (a << 3);
+  a += (a >> 1);
+  a = (a * 11UL + 204UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage013(uint16_t x) {
+  uint32_t a = (uint32_t)x + 13UL;
+  a ^= (a << 4);
+  a += (a >> 2);
+  a = (a * 13UL + 221UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage014(uint16_t x) {
+  uint32_t a = (uint32_t)x + 14UL;
+  a ^= (a << 5);
+  a += (a >> 3);
+  a = (a * 1UL + 238UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage015(uint16_t x) {
+  uint32_t a = (uint32_t)x + 15UL;
+  a ^= (a << 1);
+  a += (a >> 1);
+  a = (a * 3UL + 255UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage016(uint16_t x) {
+  uint32_t a = (uint32_t)x + 16UL;
+  a ^= (a << 2);
+  a += (a >> 2);
+  a = (a * 5UL + 272UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage017(uint16_t x) {
+  uint32_t a = (uint32_t)x + 17UL;
+  a ^= (a << 3);
+  a += (a >> 3);
+  a = (a * 7UL + 289UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage018(uint16_t x) {
+  uint32_t a = (uint32_t)x + 18UL;
+  a ^= (a << 4);
+  a += (a >> 1);
+  a = (a * 9UL + 306UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage019(uint16_t x) {
+  uint32_t a = (uint32_t)x + 19UL;
+  a ^= (a << 5);
+  a += (a >> 2);
+  a = (a * 11UL + 323UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage020(uint16_t x) {
+  uint32_t a = (uint32_t)x + 20UL;
+  a ^= (a << 1);
+  a += (a >> 3);
+  a = (a * 13UL + 340UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage021(uint16_t x) {
+  uint32_t a = (uint32_t)x + 21UL;
+  a ^= (a << 2);
+  a += (a >> 1);
+  a = (a * 1UL + 357UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage022(uint16_t x) {
+  uint32_t a = (uint32_t)x + 22UL;
+  a ^= (a << 3);
+  a += (a >> 2);
+  a = (a * 3UL + 374UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage023(uint16_t x) {
+  uint32_t a = (uint32_t)x + 23UL;
+  a ^= (a << 4);
+  a += (a >> 3);
+  a = (a * 5UL + 391UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage024(uint16_t x) {
+  uint32_t a = (uint32_t)x + 24UL;
+  a ^= (a << 5);
+  a += (a >> 1);
+  a = (a * 7UL + 408UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage025(uint16_t x) {
+  uint32_t a = (uint32_t)x + 25UL;
+  a ^= (a << 1);
+  a += (a >> 2);
+  a = (a * 9UL + 425UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage026(uint16_t x) {
+  uint32_t a = (uint32_t)x + 26UL;
+  a ^= (a << 2);
+  a += (a >> 3);
+  a = (a * 11UL + 442UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage027(uint16_t x) {
+  uint32_t a = (uint32_t)x + 27UL;
+  a ^= (a << 3);
+  a += (a >> 1);
+  a = (a * 13UL + 459UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage028(uint16_t x) {
+  uint32_t a = (uint32_t)x + 28UL;
+  a ^= (a << 4);
+  a += (a >> 2);
+  a = (a * 1UL + 476UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage029(uint16_t x) {
+  uint32_t a = (uint32_t)x + 29UL;
+  a ^= (a << 5);
+  a += (a >> 3);
+  a = (a * 3UL + 493UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage030(uint16_t x) {
+  uint32_t a = (uint32_t)x + 30UL;
+  a ^= (a << 1);
+  a += (a >> 1);
+  a = (a * 5UL + 510UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage031(uint16_t x) {
+  uint32_t a = (uint32_t)x + 31UL;
+  a ^= (a << 2);
+  a += (a >> 2);
+  a = (a * 7UL + 527UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage032(uint16_t x) {
+  uint32_t a = (uint32_t)x + 32UL;
+  a ^= (a << 3);
+  a += (a >> 3);
+  a = (a * 9UL + 544UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage033(uint16_t x) {
+  uint32_t a = (uint32_t)x + 33UL;
+  a ^= (a << 4);
+  a += (a >> 1);
+  a = (a * 11UL + 561UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage034(uint16_t x) {
+  uint32_t a = (uint32_t)x + 34UL;
+  a ^= (a << 5);
+  a += (a >> 2);
+  a = (a * 13UL + 578UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage035(uint16_t x) {
+  uint32_t a = (uint32_t)x + 35UL;
+  a ^= (a << 1);
+  a += (a >> 3);
+  a = (a * 1UL + 595UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage036(uint16_t x) {
+  uint32_t a = (uint32_t)x + 36UL;
+  a ^= (a << 2);
+  a += (a >> 1);
+  a = (a * 3UL + 612UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage037(uint16_t x) {
+  uint32_t a = (uint32_t)x + 37UL;
+  a ^= (a << 3);
+  a += (a >> 2);
+  a = (a * 5UL + 629UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage038(uint16_t x) {
+  uint32_t a = (uint32_t)x + 38UL;
+  a ^= (a << 4);
+  a += (a >> 3);
+  a = (a * 7UL + 646UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage039(uint16_t x) {
+  uint32_t a = (uint32_t)x + 39UL;
+  a ^= (a << 5);
+  a += (a >> 1);
+  a = (a * 9UL + 663UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage040(uint16_t x) {
+  uint32_t a = (uint32_t)x + 40UL;
+  a ^= (a << 1);
+  a += (a >> 2);
+  a = (a * 11UL + 680UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage041(uint16_t x) {
+  uint32_t a = (uint32_t)x + 41UL;
+  a ^= (a << 2);
+  a += (a >> 3);
+  a = (a * 13UL + 697UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage042(uint16_t x) {
+  uint32_t a = (uint32_t)x + 42UL;
+  a ^= (a << 3);
+  a += (a >> 1);
+  a = (a * 1UL + 714UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage043(uint16_t x) {
+  uint32_t a = (uint32_t)x + 43UL;
+  a ^= (a << 4);
+  a += (a >> 2);
+  a = (a * 3UL + 731UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage044(uint16_t x) {
+  uint32_t a = (uint32_t)x + 44UL;
+  a ^= (a << 5);
+  a += (a >> 3);
+  a = (a * 5UL + 748UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage045(uint16_t x) {
+  uint32_t a = (uint32_t)x + 45UL;
+  a ^= (a << 1);
+  a += (a >> 1);
+  a = (a * 7UL + 765UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage046(uint16_t x) {
+  uint32_t a = (uint32_t)x + 46UL;
+  a ^= (a << 2);
+  a += (a >> 2);
+  a = (a * 9UL + 782UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage047(uint16_t x) {
+  uint32_t a = (uint32_t)x + 47UL;
+  a ^= (a << 3);
+  a += (a >> 3);
+  a = (a * 11UL + 799UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage048(uint16_t x) {
+  uint32_t a = (uint32_t)x + 48UL;
+  a ^= (a << 4);
+  a += (a >> 1);
+  a = (a * 13UL + 816UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage049(uint16_t x) {
+  uint32_t a = (uint32_t)x + 49UL;
+  a ^= (a << 5);
+  a += (a >> 2);
+  a = (a * 1UL + 833UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage050(uint16_t x) {
+  uint32_t a = (uint32_t)x + 50UL;
+  a ^= (a << 1);
+  a += (a >> 3);
+  a = (a * 3UL + 850UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage051(uint16_t x) {
+  uint32_t a = (uint32_t)x + 51UL;
+  a ^= (a << 2);
+  a += (a >> 1);
+  a = (a * 5UL + 867UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage052(uint16_t x) {
+  uint32_t a = (uint32_t)x + 52UL;
+  a ^= (a << 3);
+  a += (a >> 2);
+  a = (a * 7UL + 884UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage053(uint16_t x) {
+  uint32_t a = (uint32_t)x + 53UL;
+  a ^= (a << 4);
+  a += (a >> 3);
+  a = (a * 9UL + 901UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage054(uint16_t x) {
+  uint32_t a = (uint32_t)x + 54UL;
+  a ^= (a << 5);
+  a += (a >> 1);
+  a = (a * 11UL + 918UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage055(uint16_t x) {
+  uint32_t a = (uint32_t)x + 55UL;
+  a ^= (a << 1);
+  a += (a >> 2);
+  a = (a * 13UL + 935UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage056(uint16_t x) {
+  uint32_t a = (uint32_t)x + 56UL;
+  a ^= (a << 2);
+  a += (a >> 3);
+  a = (a * 1UL + 952UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage057(uint16_t x) {
+  uint32_t a = (uint32_t)x + 57UL;
+  a ^= (a << 3);
+  a += (a >> 1);
+  a = (a * 3UL + 969UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage058(uint16_t x) {
+  uint32_t a = (uint32_t)x + 58UL;
+  a ^= (a << 4);
+  a += (a >> 2);
+  a = (a * 5UL + 986UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage059(uint16_t x) {
+  uint32_t a = (uint32_t)x + 59UL;
+  a ^= (a << 5);
+  a += (a >> 3);
+  a = (a * 7UL + 1003UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage060(uint16_t x) {
+  uint32_t a = (uint32_t)x + 60UL;
+  a ^= (a << 1);
+  a += (a >> 1);
+  a = (a * 9UL + 1020UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage061(uint16_t x) {
+  uint32_t a = (uint32_t)x + 61UL;
+  a ^= (a << 2);
+  a += (a >> 2);
+  a = (a * 11UL + 1037UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage062(uint16_t x) {
+  uint32_t a = (uint32_t)x + 62UL;
+  a ^= (a << 3);
+  a += (a >> 3);
+  a = (a * 13UL + 1054UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage063(uint16_t x) {
+  uint32_t a = (uint32_t)x + 63UL;
+  a ^= (a << 4);
+  a += (a >> 1);
+  a = (a * 1UL + 1071UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage064(uint16_t x) {
+  uint32_t a = (uint32_t)x + 64UL;
+  a ^= (a << 5);
+  a += (a >> 2);
+  a = (a * 3UL + 1088UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage065(uint16_t x) {
+  uint32_t a = (uint32_t)x + 65UL;
+  a ^= (a << 1);
+  a += (a >> 3);
+  a = (a * 5UL + 1105UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage066(uint16_t x) {
+  uint32_t a = (uint32_t)x + 66UL;
+  a ^= (a << 2);
+  a += (a >> 1);
+  a = (a * 7UL + 1122UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage067(uint16_t x) {
+  uint32_t a = (uint32_t)x + 67UL;
+  a ^= (a << 3);
+  a += (a >> 2);
+  a = (a * 9UL + 1139UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage068(uint16_t x) {
+  uint32_t a = (uint32_t)x + 68UL;
+  a ^= (a << 4);
+  a += (a >> 3);
+  a = (a * 11UL + 1156UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage069(uint16_t x) {
+  uint32_t a = (uint32_t)x + 69UL;
+  a ^= (a << 5);
+  a += (a >> 1);
+  a = (a * 13UL + 1173UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage070(uint16_t x) {
+  uint32_t a = (uint32_t)x + 70UL;
+  a ^= (a << 1);
+  a += (a >> 2);
+  a = (a * 1UL + 1190UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage071(uint16_t x) {
+  uint32_t a = (uint32_t)x + 71UL;
+  a ^= (a << 2);
+  a += (a >> 3);
+  a = (a * 3UL + 1207UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage072(uint16_t x) {
+  uint32_t a = (uint32_t)x + 72UL;
+  a ^= (a << 3);
+  a += (a >> 1);
+  a = (a * 5UL + 1224UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage073(uint16_t x) {
+  uint32_t a = (uint32_t)x + 73UL;
+  a ^= (a << 4);
+  a += (a >> 2);
+  a = (a * 7UL + 1241UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage074(uint16_t x) {
+  uint32_t a = (uint32_t)x + 74UL;
+  a ^= (a << 5);
+  a += (a >> 3);
+  a = (a * 9UL + 1258UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage075(uint16_t x) {
+  uint32_t a = (uint32_t)x + 75UL;
+  a ^= (a << 1);
+  a += (a >> 1);
+  a = (a * 11UL + 1275UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage076(uint16_t x) {
+  uint32_t a = (uint32_t)x + 76UL;
+  a ^= (a << 2);
+  a += (a >> 2);
+  a = (a * 13UL + 1292UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage077(uint16_t x) {
+  uint32_t a = (uint32_t)x + 77UL;
+  a ^= (a << 3);
+  a += (a >> 3);
+  a = (a * 1UL + 1309UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage078(uint16_t x) {
+  uint32_t a = (uint32_t)x + 78UL;
+  a ^= (a << 4);
+  a += (a >> 1);
+  a = (a * 3UL + 1326UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage079(uint16_t x) {
+  uint32_t a = (uint32_t)x + 79UL;
+  a ^= (a << 5);
+  a += (a >> 2);
+  a = (a * 5UL + 1343UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage080(uint16_t x) {
+  uint32_t a = (uint32_t)x + 80UL;
+  a ^= (a << 1);
+  a += (a >> 3);
+  a = (a * 7UL + 1360UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage081(uint16_t x) {
+  uint32_t a = (uint32_t)x + 81UL;
+  a ^= (a << 2);
+  a += (a >> 1);
+  a = (a * 9UL + 1377UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage082(uint16_t x) {
+  uint32_t a = (uint32_t)x + 82UL;
+  a ^= (a << 3);
+  a += (a >> 2);
+  a = (a * 11UL + 1394UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage083(uint16_t x) {
+  uint32_t a = (uint32_t)x + 83UL;
+  a ^= (a << 4);
+  a += (a >> 3);
+  a = (a * 13UL + 1411UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage084(uint16_t x) {
+  uint32_t a = (uint32_t)x + 84UL;
+  a ^= (a << 5);
+  a += (a >> 1);
+  a = (a * 1UL + 1428UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage085(uint16_t x) {
+  uint32_t a = (uint32_t)x + 85UL;
+  a ^= (a << 1);
+  a += (a >> 2);
+  a = (a * 3UL + 1445UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage086(uint16_t x) {
+  uint32_t a = (uint32_t)x + 86UL;
+  a ^= (a << 2);
+  a += (a >> 3);
+  a = (a * 5UL + 1462UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage087(uint16_t x) {
+  uint32_t a = (uint32_t)x + 87UL;
+  a ^= (a << 3);
+  a += (a >> 1);
+  a = (a * 7UL + 1479UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage088(uint16_t x) {
+  uint32_t a = (uint32_t)x + 88UL;
+  a ^= (a << 4);
+  a += (a >> 2);
+  a = (a * 9UL + 1496UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage089(uint16_t x) {
+  uint32_t a = (uint32_t)x + 89UL;
+  a ^= (a << 5);
+  a += (a >> 3);
+  a = (a * 11UL + 1513UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage090(uint16_t x) {
+  uint32_t a = (uint32_t)x + 90UL;
+  a ^= (a << 1);
+  a += (a >> 1);
+  a = (a * 13UL + 1530UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage091(uint16_t x) {
+  uint32_t a = (uint32_t)x + 91UL;
+  a ^= (a << 2);
+  a += (a >> 2);
+  a = (a * 1UL + 1547UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage092(uint16_t x) {
+  uint32_t a = (uint32_t)x + 92UL;
+  a ^= (a << 3);
+  a += (a >> 3);
+  a = (a * 3UL + 1564UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage093(uint16_t x) {
+  uint32_t a = (uint32_t)x + 93UL;
+  a ^= (a << 4);
+  a += (a >> 1);
+  a = (a * 5UL + 1581UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage094(uint16_t x) {
+  uint32_t a = (uint32_t)x + 94UL;
+  a ^= (a << 5);
+  a += (a >> 2);
+  a = (a * 7UL + 1598UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage095(uint16_t x) {
+  uint32_t a = (uint32_t)x + 95UL;
+  a ^= (a << 1);
+  a += (a >> 3);
+  a = (a * 9UL + 1615UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage096(uint16_t x) {
+  uint32_t a = (uint32_t)x + 96UL;
+  a ^= (a << 2);
+  a += (a >> 1);
+  a = (a * 11UL + 1632UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage097(uint16_t x) {
+  uint32_t a = (uint32_t)x + 97UL;
+  a ^= (a << 3);
+  a += (a >> 2);
+  a = (a * 13UL + 1649UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage098(uint16_t x) {
+  uint32_t a = (uint32_t)x + 98UL;
+  a ^= (a << 4);
+  a += (a >> 3);
+  a = (a * 1UL + 1666UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage099(uint16_t x) {
+  uint32_t a = (uint32_t)x + 99UL;
+  a ^= (a << 5);
+  a += (a >> 1);
+  a = (a * 3UL + 1683UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+uint16_t mathStage100(uint16_t x) {
+  uint32_t a = (uint32_t)x + 100UL;
+  a ^= (a << 1);
+  a += (a >> 2);
+  a = (a * 5UL + 1700UL) & 0xFFFFUL;
+  return (uint16_t)a;
+}
+typedef uint16_t (*MathFunction)(uint16_t);
+MathFunction stages[] = {
+  mathStage001, mathStage002, mathStage003, mathStage004, mathStage005, mathStage006, mathStage007, mathStage008, mathStage009, mathStage010,
+  mathStage011, mathStage012, mathStage013, mathStage014, mathStage015, mathStage016, mathStage017, mathStage018, mathStage019, mathStage020,
+  mathStage021, mathStage022, mathStage023, mathStage024, mathStage025, mathStage026, mathStage027, mathStage028, mathStage029, mathStage030,
+  mathStage031, mathStage032, mathStage033, mathStage034, mathStage035, mathStage036, mathStage037, mathStage038, mathStage039, mathStage040,
+  mathStage041, mathStage042, mathStage043, mathStage044, mathStage045, mathStage046, mathStage047, mathStage048, mathStage049, mathStage050,
+  mathStage051, mathStage052, mathStage053, mathStage054, mathStage055, mathStage056, mathStage057, mathStage058, mathStage059, mathStage060,
+  mathStage061, mathStage062, mathStage063, mathStage064, mathStage065, mathStage066, mathStage067, mathStage068, mathStage069, mathStage070,
+  mathStage071, mathStage072, mathStage073, mathStage074, mathStage075, mathStage076, mathStage077, mathStage078, mathStage079, mathStage080,
+  mathStage081, mathStage082, mathStage083, mathStage084, mathStage085, mathStage086, mathStage087, mathStage088, mathStage089, mathStage090,
+  mathStage091, mathStage092, mathStage093, mathStage094, mathStage095, mathStage096, mathStage097, mathStage098, mathStage099, mathStage100
+};
+void executeMathPipeline() {
+  uint16_t x = nextRandom();
+  if (mode == 0) {
+    for (byte i = 0; i < 100; ++i) x = stages[i](x);
+  } else if (mode == 1) {
+    for (int i = 99; i >= 0; --i) x = stages[i](x);
+  } else if (mode == 2) {
+    for (byte i = 0; i < 100; i += 2) x = stages[i](x);
+  } else {
+    for (byte i = 1; i < 100; i += 2) x = stages[i](x);
+  }
+  checksum = (uint16_t)((checksum << 1) ^ x);
+  storeSample(x & 1023U);
+}
+void setup() {
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+  Serial.begin(9600);
+  Serial.println(F("Arduino Uno 100-stage functional test"));
+  printHelp();
+  runSelfTest();
+}
+void loop() {
+  unsigned long now = millis();
+  while (Serial.available() > 0) handleCommand((char)Serial.read());
+  executeMathPipeline();
+  ++iterations;
+  if (blinking && now - lastBlink >= blinkInterval) {
+    lastBlink = now;
+    ledOn = !ledOn;
+    digitalWrite(LED_PIN, ledOn ? HIGH : LOW);
+  }
+  if (reporting && now - lastReport >= 2000UL) {
+    lastReport = now;
+    printStatus();
+  }
+}
